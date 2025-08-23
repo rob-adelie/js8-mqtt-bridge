@@ -1,0 +1,14 @@
+[Unit]
+Description=js8-mqtt-bridge
+After=network.target
+
+[Service]
+ExecStart=%h/Projects/js8-mqtt-bridge/run.sh
+WorkingDirectory=%h/Projects/js8-mqtt-bridge
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+
+[Install]
+WantedBy=default.target
+
