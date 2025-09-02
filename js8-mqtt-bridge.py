@@ -111,17 +111,21 @@ def on_message(client, userdata, msg):
 
 # --- JS8Call API Functions ---
 def connect_js8call():
-    """Initializes the connection to the JS8Call API."""
+    """Continuously retries the connection to the JS8Call API until successful."""
     global js8_socket
-    try:
-        js8_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        js8_socket.settimeout(0.1)
-        js8_socket.connect((JS8CALL_HOST, int(JS8CALL_PORT)))
-        logger.info("Connected to JS8Call API")
-        return True
-    except Exception as e:
-        logger.error(f"Error connecting to JS8Call: {e}")
-        return False
+    
+    while True:
+        try:
+            logger.info("Attempting to connect to JS8Call...")
+            js8_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            js8_socket.settimeout(1)  # Increase timeout for better stability
+            js8_socket.connect((JS8CALL_HOST, int(JS8CALL_PORT)))
+            logger.info("Connected to JS8Call API")
+            return True  # Exit the function on success
+        except (socket.error, Exception) as e:
+            logger.error(f"Error connecting to JS8Call: {e}. Retrying in 5 seconds...")
+            js8_socket.close() # Ensure socket is closed before next attempt
+            time.sleep(5)  # Wait before retrying to avoid excessive CPU usage
 
 # --- Main Logic ---
 def main():
