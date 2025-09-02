@@ -3,7 +3,7 @@ Description=js8-mqtt-bridge
 After=network.target
 
 [Service]
-ExecStart=%h/Projects/js8-mqtt-bridge/run.sh
+ExecStart=%h/Projects/js8-mqtt-bridge/venv/bin/python %h/Projects/js8-mqtt-bridge/js8-mqtt-bridge.py
 WorkingDirectory=%h/Projects/js8-mqtt-bridge
 StandardOutput=inherit
 StandardError=inherit
