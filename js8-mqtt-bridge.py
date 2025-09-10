@@ -158,7 +158,7 @@ def main():
                     logger.info(f"Processing command from queue: {command_payload}")
                     logger.debug(command_payload_str)
 
-                    # Check if the command contains the 'message' key as we discussed
+                    # Check if the command contains the 'message' key 
                     if 'message' in command_payload:
                         # Construct the CORRECT JS8Call API JSON payload
                         js8_payload = {
@@ -259,7 +259,7 @@ def main():
                                 
                             else:
                                 # All other message types
-                                logger.info(f"Received other message type: {message_type}. Publishing to dynamic topic.")
+                                logger.debug(f"Received other message type: {message_type}. Publishing to dynamic topic.")
                                 dynamic_topic = f"{JS8_BASE_TOPIC}/{message_type.replace('.', '/').lower()}"
                                 mqtt_client.publish(dynamic_topic, json.dumps(js8_message), qos=0)
 
