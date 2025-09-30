@@ -192,7 +192,7 @@ def main():
                     msg_data = message_buffer[msg_key]
                     message_id = msg_data['origin'] # Use origin as ID for query responses
 
-                    logger,info(f"Query response from {msg_data['origin']} timed out. Publishing as complete.")
+                    logger.info(f"Query response from {msg_data['origin']} timed out. Publishing as complete.")
                     complete_message = {
                         "id": message_id,
                         "text": msg_data['text'],
@@ -219,7 +219,8 @@ def main():
                                 snr = js8_message.get("params", {}).get("SNR")
                                 origin = js8_message.get("params", {}).get("ORIGIN")
                                 text_content = js8_message.get("params", {}).get("TEXT", "")
-                                
+                                logger.debug(text_content)
+
                                 # Ignore RX.ACTIVITY for directed messages
                                 if message_id is not None:
                                     logger.debug(f"Ignoring RX.ACTIVITY frame with ID '{message_id}' as we wait for RX.DIRECTED.")
@@ -254,6 +255,7 @@ def main():
                                     "origin": js8_message.get("params", {}).get("ORIGIN", ""),
                                     "complete": True
                                 }
+                                logger.debug(complete_message)
                                 mqtt_client.publish(JS8_RX_COMPLETE_TOPIC, json.dumps(complete_message), qos=0)
                                 logger.info(f"Published complete message from RX.DIRECTED: {complete_message['text']}")
                                 
@@ -278,4 +280,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
