@@ -96,7 +96,7 @@ def on_connect(client, userdata, flags, rc, properties):
         # Subscribe to the topic for sending commands to JS8Call
         client.subscribe(f"{JS8_BASE_TOPIC}/tx/command")
     else:
-        loger.error(f"Failed to connect, return code {rc}\n")
+        logger.error(f"Failed to connect, return code {rc}\n")
 
 def on_message(client, userdata, msg):
     """The callback for when a PUBLISH message is received from the server."""
@@ -173,7 +173,7 @@ def main():
                         js8_socket.sendall(js8_payload_str.encode('utf-8'))
                         last_tx_time = current_time
                     else:
-                        logger.warn("Command payload did not contain a 'message' key.")
+                        logger.warning("Command payload did not contain a 'message' key.")
                 except json.JSONDecodeError:
                     logger.error(f"Failed to parse JSON from TX queue: {command_payload_str}")
 
@@ -184,7 +184,13 @@ def main():
                 timed_out_keys = []
                 for msg_key, msg_data in message_buffer.items():
                     # This check is ONLY for query responses
-                    timeout_duration = 3
+                    # Use longer timeout for heartbeat messages (they often have grid info in later frames)
+                    text_content = msg_data.get('text', '')
+                    if '@HB' in text_content or 'HEARTBEAT' in text_content:
+                        timeout_duration = 10  # Longer timeout for heartbeat messages
+                    else:
+                        timeout_duration = 3  # Standard timeout for other query responses
+                    
                     if current_time - msg_data['last_seen'] > timeout_duration:
                         timed_out_keys.append(msg_key)
                 
@@ -192,7 +198,7 @@ def main():
                     msg_data = message_buffer[msg_key]
                     message_id = msg_data['origin'] # Use origin as ID for query responses
 
-                    logger,info(f"Query response from {msg_data['origin']} timed out. Publishing as complete.")
+                    logger.info(f"Query response from {msg_data['origin']} timed out. Publishing as complete.")
                     complete_message = {
                         "id": message_id,
                         "text": msg_data['text'],
@@ -245,6 +251,7 @@ def main():
                             elif message_type == "RX.DIRECTED":
                                 # This is the final, fully reassembled message from JS8Call.
                                 message_id = js8_message.get("params", {}).get("ID")
+                                snr = js8_message.get("params", {}).get("SNR")
                                 logger.info(f"Received definitive RX.DIRECTED message with ID '{message_id}'. Publishing now.")
                                 
                                 complete_message = {
