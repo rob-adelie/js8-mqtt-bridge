@@ -40,20 +40,45 @@ if errorlevel 1 (
 
 :: Activate the virtual environment
 echo Activating virtual environment...
-call "venv\Scripts\activate"
+call "venv\Scripts\activate.bat"
 if errorlevel 1 (
     echo ERROR: Failed to activate virtual environment
     pause
     exit /b 1
 )
 
-:: Install the pip requirements
-echo Installing requirements...
-pip install --no-cache-dir -r requirements.txt
+:: Verify activation worked by checking if pip is available
+echo Verifying virtual environment activation...
+echo Current PATH: %PATH%
+echo.
+where pip >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Failed to install requirements
-    pause
-    exit /b 1
+    echo WARNING: pip not found in PATH after activation, trying direct path...
+    echo Checking if pip exists in venv\Scripts...
+    if exist "venv\Scripts\pip.exe" (
+        echo Found pip.exe in venv\Scripts, using direct path...
+        "venv\Scripts\pip.exe" install --no-cache-dir -r requirements.txt
+        if errorlevel 1 (
+            echo ERROR: Failed to install requirements using direct pip path
+            pause
+            exit /b 1
+        )
+    ) else (
+        echo ERROR: pip.exe not found in venv\Scripts directory
+        echo Available files in venv\Scripts:
+        dir "venv\Scripts" /b
+        pause
+        exit /b 1
+    )
+) else (
+    :: Install the pip requirements using pip from PATH
+    echo Installing requirements using pip from PATH...
+    pip install --no-cache-dir -r requirements.txt
+    if errorlevel 1 (
+        echo ERROR: Failed to install requirements
+        pause
+        exit /b 1
+    )
 )
 
 :: Create a logs folder
