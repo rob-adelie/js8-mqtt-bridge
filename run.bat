@@ -21,8 +21,18 @@ echo Starting JS8-MQTT Bridge...
 echo Press Ctrl+C to stop
 echo.
 
-:: Activate virtual environment and run
-call "venv\Scripts\activate"
-python js8-mqtt-bridge.py
+:: Use the virtual environment's Python directly (no need to activate)
+echo Using virtual environment Python...
+echo Checking if paho-mqtt is installed...
+"venv\Scripts\python.exe" -c "import paho.mqtt.client; print('paho-mqtt is available')"
+if errorlevel 1 (
+    echo ERROR: paho-mqtt not found in virtual environment
+    echo Please run install.bat again to reinstall requirements
+    pause
+    exit /b 1
+)
+
+echo Starting JS8-MQTT Bridge...
+"venv\Scripts\python.exe" js8-mqtt-bridge.py
 
 pause
