@@ -44,9 +44,60 @@ To run the middleware, you need the following:
 
 ## Installation & Setup
 
+### Linux/macOS Installation
+
 1. **Clone the Repository:**
-2. **Update the.cfg file with params for your system
-3. **Run install.sh
+```bash
+git clone https://github.com/rob-adelie/js8-mqtt-bridge.git
+cd js8-mqtt-bridge
+```
+
+2. **Configure the Application:**
+Edit `js8-mqtt-bridge.cfg` with your system settings:
+- MQTT Broker details (host, port, username, password)
+- JS8Call API settings (host, port)
+
+3. **Run Installation Script:**
+```bash
+./install.sh
+```
+
+### Windows Installation
+
+1. **Clone the Repository:**
+```bash
+git clone https://github.com/rob-adelie/js8-mqtt-bridge.git
+cd js8-mqtt-bridge
+```
+
+2. **Configure the Application:**
+Edit `js8-mqtt-bridge.cfg` with your system settings:
+- MQTT Broker details (host, port, username, password)
+- JS8Call API settings (host, port)
+
+3. **Run Installation Script:**
+Double-click `install.bat` or run from command prompt:
+```cmd
+install.bat
+```
+
+The Windows installer will:
+- Create a Python virtual environment
+- Install required dependencies
+- Create a startup shortcut for automatic launch
+- Set up logging directory
+
+4. **Manual Testing:**
+To test the installation, run:
+```cmd
+run.bat
+```
+
+5. **Uninstallation:**
+To remove the installation, run:
+```cmd
+uninstall.bat
+```
 
 
 
