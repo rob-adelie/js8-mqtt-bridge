@@ -28,6 +28,8 @@ import paho.mqtt.client as mqtt
 from collections import deque
 import logging
 import sys
+import threading
+import os
 
 ####### Setup Logging ######
 # Create a logger
@@ -71,6 +73,10 @@ MQTT_PASSWORD = conf["MQTT_PASSWORD"].strip()
 JS8CALL_HOST = conf["JS8CALL_HOST"].strip()
 JS8CALL_PORT = conf["JS8CALL_PORT"].strip()
 
+# Mailbox configuration
+MAILBOX_FILE = conf.get("MAILBOX_FILE", "mailbox_messages.json").strip()
+MAILBOX_RETRIEVAL_INTERVAL = int(conf.get("MAILBOX_RETRIEVAL_INTERVAL", "3600"))
+
 
 TX_DELAY_SECONDS = 15
 MESSAGE_TIMEOUT_SECONDS = 120
@@ -79,6 +85,7 @@ MESSAGE_TIMEOUT_SECONDS = 120
 JS8_BASE_TOPIC = "js8"
 JS8_RX_COMPLETE_TOPIC = f"{JS8_BASE_TOPIC}/rx/complete"
 JS8_RX_INCOMPLETE_TOPIC = f"{JS8_BASE_TOPIC}/rx/incomplete"
+JS8_MAILBOX_TOPIC = f"{JS8_BASE_TOPIC}/mailbox"
 
 js8_socket = None
 # This buffer is now ONLY for multi-frame query responses (no standard ID)
@@ -95,6 +102,8 @@ def on_connect(client, userdata, flags, rc, properties):
         logger.info("Connected to MQTT Broker!")
         # Subscribe to the topic for sending commands to JS8Call
         client.subscribe(f"{JS8_BASE_TOPIC}/tx/command")
+        # Subscribe to the mailbox request topic
+        client.subscribe(f"{JS8_BASE_TOPIC}/mailbox/request")
     else:
         logger.error(f"Failed to connect, return code {rc}\n")
 
@@ -108,6 +117,95 @@ def on_message(client, userdata, msg):
             logger.info("Command added to queue.")
         except json.JSONDecodeError:
             logger.error(f"Failed to decode JSON payload: {msg.payload.decode()}")
+    elif msg.topic == f"{JS8_BASE_TOPIC}/mailbox/request":
+        try:
+            # Handle mailbox request
+            payload = json.loads(msg.payload.decode())
+            request_type = payload.get("type", "all")
+            callsign_filter = payload.get("callsign", "").strip().upper()
+            logger.info(f"Mailbox request: type={request_type}, callsign_filter='{callsign_filter}'")
+
+            if request_type == "all":
+                # Return all mailbox messages, optionally filtered by callsign
+                messages = load_mailbox_messages()
+                if callsign_filter:
+                    # Filter messages by callsign (both FROM and TO)
+                    filtered_messages = [
+                        msg for msg in messages 
+                        if callsign_filter in [msg.get('from', '').upper(), msg.get('to', '').upper()]
+                    ]
+                    response = {
+                        "type": "mailbox_response",
+                        "messages": filtered_messages,
+                        "count": len(filtered_messages),
+                        "filtered_by": callsign_filter
+                    }
+                    logger.info(f"Sent {len(filtered_messages)} messages filtered by callsign {callsign_filter} to MQTT")
+                else:
+                    response = {
+                        "type": "mailbox_response",
+                        "messages": messages,
+                        "count": len(messages)
+                    }
+                    logger.info(f"Sent {len(messages)} mailbox messages to MQTT")
+                client.publish(f"{JS8_MAILBOX_TOPIC}/response", json.dumps(response), qos=0)
+            elif request_type == "recent":
+                # Return recent messages (last 10), optionally filtered by callsign
+                messages = load_mailbox_messages()
+                if callsign_filter:
+                    # Filter messages by callsign first, then take recent
+                    filtered_messages = [
+                        msg for msg in messages 
+                        if callsign_filter in [msg.get('from', '').upper(), msg.get('to', '').upper()]
+                    ]
+                    recent_messages = filtered_messages[-10:] if len(filtered_messages) > 10 else filtered_messages
+                    response = {
+                        "type": "mailbox_response",
+                        "messages": recent_messages,
+                        "count": len(recent_messages),
+                        "filtered_by": callsign_filter
+                    }
+                    logger.info(f"Sent {len(recent_messages)} recent messages filtered by callsign {callsign_filter} to MQTT")
+                else:
+                    recent_messages = messages[-10:] if len(messages) > 10 else messages
+                    response = {
+                        "type": "mailbox_response",
+                        "messages": recent_messages,
+                        "count": len(recent_messages)
+                    }
+                    logger.info(f"Sent {len(recent_messages)} recent mailbox messages to MQTT")
+                client.publish(f"{JS8_MAILBOX_TOPIC}/response", json.dumps(response), qos=0)
+            elif request_type == "refresh":
+                # Force refresh mailbox from JS8Call
+                process_mailbox_retrieval()
+                messages = load_mailbox_messages()
+                if callsign_filter:
+                    # Filter messages by callsign
+                    filtered_messages = [
+                        msg for msg in messages 
+                        if callsign_filter in [msg.get('from', '').upper(), msg.get('to', '').upper()]
+                    ]
+                    response = {
+                        "type": "mailbox_response",
+                        "messages": filtered_messages,
+                        "count": len(filtered_messages),
+                        "refreshed": True,
+                        "filtered_by": callsign_filter
+                    }
+                    logger.info(f"Refreshed and sent {len(filtered_messages)} messages filtered by callsign {callsign_filter} to MQTT")
+                else:
+                    response = {
+                        "type": "mailbox_response",
+                        "messages": messages,
+                        "count": len(messages),
+                        "refreshed": True
+                    }
+                    logger.info(f"Refreshed and sent {len(messages)} mailbox messages to MQTT")
+                client.publish(f"{JS8_MAILBOX_TOPIC}/response", json.dumps(response), qos=0)
+        except json.JSONDecodeError:
+            logger.error(f"Failed to decode mailbox request JSON: {msg.payload.decode()}")
+        except Exception as e:
+            logger.error(f"Error handling mailbox request: {e}")
 
 # --- JS8Call API Functions ---
 def connect_js8call():
@@ -127,6 +225,228 @@ def connect_js8call():
             js8_socket.close() # Ensure socket is closed before next attempt
             time.sleep(5)  # Wait before retrying to avoid excessive CPU usage
 
+def send_js8_command(command):
+    """Send a command to JS8Call and return the response."""
+    try:
+        command_str = json.dumps(command) + '\n'
+        js8_socket.sendall(command_str.encode('utf-8'))
+        
+        # Wait for response - handle large responses by reading until we get a complete JSON
+        response_data = b""
+        while True:
+            try:
+                chunk = js8_socket.recv(4096)
+                if not chunk:
+                    break
+                response_data += chunk
+                
+                # Try to parse the response to see if it's complete
+                try:
+                    response_str = response_data.decode('utf-8').strip()
+                    # Check if we have a complete JSON object
+                    if response_str.endswith('}') and response_str.count('{') == response_str.count('}'):
+                        return json.loads(response_str)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    # Continue reading if JSON is not complete
+                    continue
+                    
+            except socket.timeout:
+                # If we have data, try to parse it
+                if response_data:
+                    break
+                else:
+                    logger.error("Timeout waiting for response from JS8Call")
+                    return None
+        
+        if response_data:
+            response_str = response_data.decode('utf-8').strip()
+            try:
+                return json.loads(response_str)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode JSON response: {e}")
+                logger.error(f"Response length: {len(response_str)}")
+                logger.error(f"Response (first 500 chars): {response_str[:500]}")
+                return None
+        else:
+            logger.error("No response data received")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error sending command to JS8Call: {e}")
+        return None
+
+def retrieve_mailbox_messages():
+    """Retrieve mailbox messages from JS8Call."""
+    logger.info("Retrieving mailbox messages...")
+    
+    command = {
+        "type": "INBOX.GET_MESSAGES",
+        "value": "",
+        "params": {
+            "_ID": int(time.time() * 1000)
+        }
+    }
+    
+    response = send_js8_command(command)
+    if response:
+        logger.info(f"Retrieved mailbox response: {json.dumps(response, indent=2)}")
+        return response
+    else:
+        logger.error("Failed to retrieve mailbox messages")
+        return None
+
+def load_mailbox_messages():
+    """Load existing mailbox messages from file."""
+    if os.path.exists(MAILBOX_FILE):
+        try:
+            with open(MAILBOX_FILE, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Error loading mailbox file: {e}")
+            return []
+    return []
+
+def save_mailbox_messages(messages):
+    """Save mailbox messages to file."""
+    try:
+        with open(MAILBOX_FILE, 'w') as f:
+            json.dump(messages, f, indent=2)
+        logger.info(f"Saved {len(messages)} mailbox messages to {MAILBOX_FILE}")
+    except IOError as e:
+        logger.error(f"Error saving mailbox file: {e}")
+
+def append_new_mailbox_messages(new_messages, existing_messages):
+    """Append new messages to existing mailbox messages, avoiding duplicates."""
+    if not new_messages or not isinstance(new_messages, list):
+        return existing_messages
+    
+    # Create a set of existing message IDs for quick lookup
+    existing_ids = {msg.get('id', '') for msg in existing_messages if 'id' in msg}
+    
+    # Add new messages that don't already exist
+    added_count = 0
+    for new_msg in new_messages:
+        # Extract the message ID from JS8Call format
+        message_id = None
+        if 'params' in new_msg and '_ID' in new_msg['params']:
+            message_id = new_msg['params']['_ID']
+        elif 'id' in new_msg:
+            message_id = new_msg['id']
+        
+        if message_id and message_id not in existing_ids:
+            # Convert JS8Call message format to our standard format
+            converted_msg = convert_js8_message(new_msg)
+            existing_messages.append(converted_msg)
+            existing_ids.add(message_id)
+            added_count += 1
+    
+    if added_count > 0:
+        logger.info(f"Added {added_count} new mailbox messages")
+    
+    return existing_messages
+
+def convert_js8_message(js8_msg):
+    """Convert JS8Call message format to our standard format."""
+    if 'params' not in js8_msg:
+        return js8_msg
+    
+    params = js8_msg['params']
+    
+    # Extract the message text
+    text = params.get('TEXT', '')
+    
+    # Extract sender and recipient
+    from_callsign = params.get('FROM', '')
+    to_callsign = params.get('TO', '')
+    
+    # Extract timestamp
+    timestamp = params.get('UTC', '')
+    
+    # Extract other useful info
+    snr = params.get('SNR', 0)
+    freq = params.get('FREQ', 0)
+    
+    # Create our standard message format
+    converted = {
+        'id': params.get('_ID', ''),
+        'type': js8_msg.get('type', 'UNKNOWN'),
+        'from': from_callsign,
+        'to': to_callsign,
+        'text': text,
+        'timestamp': timestamp,
+        'snr': snr,
+        'freq': freq,
+        'raw_params': params  # Keep original params for reference
+    }
+    
+    return converted
+
+def process_mailbox_retrieval():
+    """Process mailbox retrieval and update storage."""
+    try:
+        # Retrieve messages from JS8Call
+        response = retrieve_mailbox_messages()
+        if not response:
+            logger.warning("No response received from JS8Call")
+            return
+        
+        # Load existing messages
+        existing_messages = load_mailbox_messages()
+        
+        # Extract messages from response - try different possible formats
+        new_messages = []
+        
+        # Check various possible response formats
+        if 'params' in response:
+            if 'MESSAGES' in response['params'] and isinstance(response['params']['MESSAGES'], list):
+                new_messages = response['params']['MESSAGES']
+                logger.info(f"Found {len(new_messages)} messages in response['params']['MESSAGES']")
+            elif 'messages' in response['params'] and isinstance(response['params']['messages'], list):
+                new_messages = response['params']['messages']
+                logger.info(f"Found {len(new_messages)} messages in response['params']['messages']")
+        
+        if 'value' in response:
+            if isinstance(response['value'], list):
+                new_messages = response['value']
+                logger.info(f"Found {len(new_messages)} messages in response['value']")
+            elif isinstance(response['value'], str) and response['value']:
+                # Sometimes messages might be in a string format
+                try:
+                    parsed_value = json.loads(response['value'])
+                    if isinstance(parsed_value, list):
+                        new_messages = parsed_value
+                        logger.info(f"Found {len(new_messages)} messages in parsed response['value']")
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse response['value'] as JSON: {response['value']}")
+        
+        # If still no messages found, log the full response structure for debugging
+        if not new_messages:
+            logger.warning("No messages found in response. Full response structure:")
+            logger.warning(json.dumps(response, indent=2))
+        else:
+            logger.info(f"Successfully extracted {len(new_messages)} messages from JS8Call response")
+        
+        # Append new messages to existing ones
+        updated_messages = append_new_mailbox_messages(new_messages, existing_messages)
+        
+        # Save updated messages
+        save_mailbox_messages(updated_messages)
+        
+    except Exception as e:
+        logger.error(f"Error processing mailbox retrieval: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+def mailbox_retrieval_worker():
+    """Background worker for periodic mailbox retrieval."""
+    while True:
+        try:
+            process_mailbox_retrieval()
+            time.sleep(MAILBOX_RETRIEVAL_INTERVAL)
+        except Exception as e:
+            logger.error(f"Error in mailbox retrieval worker: {e}")
+            time.sleep(60)  # Wait 1 minute before retrying on error
+
 # --- Main Logic ---
 def main():
     if not connect_js8call():
@@ -139,6 +459,15 @@ def main():
     mqtt_client.username_pw_set(username=MQTT_USERNAME, password=MQTT_PASSWORD)
     mqtt_client.connect(MQTT_BROKER, int(MQTT_PORT), 60)
     mqtt_client.loop_start()
+
+    # Perform initial mailbox retrieval
+    logger.info("Performing initial mailbox retrieval...")
+    process_mailbox_retrieval()
+
+    # Start mailbox retrieval worker in background thread
+    mailbox_thread = threading.Thread(target=mailbox_retrieval_worker, daemon=True)
+    mailbox_thread.start()
+    logger.info("Started mailbox retrieval worker thread")
 
     logger.info("js8call monitoring running...")
     buffer = ""
